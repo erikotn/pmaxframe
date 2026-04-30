@@ -68,6 +68,23 @@
             '160x600': { name: 'Skyscraper (160×600)',        w: 160, h: 600, layout: 'tall' },
         };
 
+        // Asset-spec hints voor de vormgever, conform Google's Performance Max guidelines.
+        // Worden subtiel in lichtgrijs onderaan de gerenderde mockup gezet.
+        const getAssetHint = (placement, displaySize) => {
+            switch (placement) {
+                case 'search-mobile':
+                    return 'Aanleveren: logo 1200×1200 px (vierkant) of 1200×300 px (landscape)';
+                case 'youtube-feed':
+                    return 'Aanleveren: video- of thumbnail 1920×1080 px (16:9 horizontaal) · channel-logo 800×800 px';
+                case 'discover-feed':
+                    return 'Aanleveren: image 1200×1200 px (1:1) of 1200×628 px (1.91:1)';
+                case 'display-banner':
+                    return displaySize ? `Aanleveren: image ${displaySize} px (exact)` : '';
+                default:
+                    return '';
+            }
+        };
+
         // ============== CLOUD API ==============
         const SUPABASE_URL = 'https://lljnruyhireravkxtxrz.supabase.co';
         const SUPABASE_ANON_KEY = 'sb_publishable_bgQYbx8tUxVwKTHlUQmsiA__5lCQymj';
@@ -868,6 +885,20 @@
             const robotoBold = (sz) => `500 ${sz * scale}px "Roboto", sans-serif`;
             const robotoReg = (sz) => `400 ${sz * scale}px "Roboto", sans-serif`;
 
+            // Tekent een subtiel asset-spec-label in de paddingruimte onderaan.
+            // Hint dat de vormgever helpt: welke pixel-afmetingen moet hij aanleveren.
+            const drawAssetHint = () => {
+                const hint = getAssetHint(placement, displaySize);
+                if (!hint) return;
+                ctx.save();
+                ctx.fillStyle = '#9ca3af';
+                ctx.font = `400 ${10 * scale}px "Inter", sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(hint, canvas.width / 2, canvas.height - pad / 2);
+                ctx.restore();
+            };
+
             if (metrics.frame === 'banner') {
                 // Display banner — flat canvas, white margin around banner
                 const W = metrics.width * scale;
@@ -882,6 +913,7 @@
                 await renderDisplayBanner(ctx, {
                     scale, content, style, displaySize: displaySize || '300x250',
                 });
+                drawAssetHint();
                 return canvas;
             }
 
@@ -954,6 +986,7 @@
             else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
             ctx.fill();
 
+            drawAssetHint();
             return canvas;
         }
 
