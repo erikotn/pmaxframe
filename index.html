@@ -1,0 +1,1581 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PmaxFrame — Performance Max ad mockups</title>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #18181b; }
+        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+        input[type="range"]::-webkit-slider-runnable-track { background: #27272a; height: 4px; border-radius: 2px; }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; margin-top: -6px;
+            height: 16px; width: 16px; background: #3b82f6; border-radius: 50%;
+            cursor: pointer; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+        }
+        .checkerboard {
+            background-color: #09090b;
+            background-image:
+                linear-gradient(45deg, #18181b 25%, transparent 25%),
+                linear-gradient(-45deg, #18181b 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #18181b 75%),
+                linear-gradient(-45deg, transparent 75%, #18181b 75%);
+            background-size: 20px 20px;
+        }
+        input[type="file"] { display: none; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        .dropzone-active { box-shadow: inset 0 0 0 3px #3b82f6; }
+        .roboto { font-family: 'Roboto', sans-serif; }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { dark: { 900: '#09090b', 800: '#18181b', 700: '#27272a' } } } }
+        }
+    </script>
+</head>
+<body class="bg-dark-900 text-white h-screen overflow-hidden">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // ============== CONSTANTS ==============
+        const PLACEMENTS = {
+            'search-mobile':  { name: 'Google Search (mobile)', frame: 'phone' },
+            'youtube-feed':   { name: 'YouTube in-feed',         frame: 'phone' },
+            'discover-feed':  { name: 'Google Discover',          frame: 'phone' },
+            'display-banner': { name: 'Display banner',           frame: 'banner' },
+        };
+
+        const DISPLAY_SIZES = {
+            '300x250': { name: 'Medium Rectangle (300×250)', w: 300, h: 250, layout: 'vertical' },
+            '336x280': { name: 'Large Rectangle (336×280)',  w: 336, h: 280, layout: 'vertical' },
+            '250x250': { name: 'Square (250×250)',            w: 250, h: 250, layout: 'vertical' },
+            '160x600': { name: 'Skyscraper (160×600)',        w: 160, h: 600, layout: 'tall' },
+        };
+
+        // ============== CLOUD API ==============
+        const SUPABASE_URL = 'https://lljnruyhireravkxtxrz.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_bgQYbx8tUxVwKTHlUQmsiA__5lCQymj';
+        const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/data`;
+        const PW_STORAGE_KEY = 'pmaxframe_pw_v1';
+        const DESIGNS_STORE = 'pmax_designs';
+        const BRANDS_STORE = 'brand_kits'; // gedeeld met SocialFrame v2
+
+        const apiCall = async (resource, action, payload = null) => {
+            const password = localStorage.getItem(PW_STORAGE_KEY);
+            if (!password) throw new Error('NO_PASSWORD');
+            const res = await fetch(FUNCTION_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                    'apikey': SUPABASE_ANON_KEY,
+                    'x-password': password,
+                },
+                body: JSON.stringify({ resource, action, payload }),
+            });
+            if (res.status === 401) {
+                localStorage.removeItem(PW_STORAGE_KEY);
+                throw new Error('WRONG_PASSWORD');
+            }
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`API_ERROR_${res.status}: ${txt}`);
+            }
+            return await res.json();
+        };
+
+        const toDbDesign = (d) => ({
+            id: String(d.id),
+            placement: d.placement,
+            display_size: d.displaySize ?? null,
+            content: d.content,
+            style: d.style,
+            date: d.date,
+        });
+        const fromDbDesign = (d) => ({
+            id: d.id,
+            placement: d.placement,
+            displaySize: d.display_size,
+            content: d.content,
+            style: d.style,
+            date: d.date,
+        });
+        const toDbKit = (k) => ({
+            id: String(k.id),
+            name: k.name,
+            sender_name: k.senderName,
+            url: k.url,
+            verified: !!k.verified,
+            avatar: k.avatar,
+        });
+        const fromDbKit = (k) => ({
+            id: k.id,
+            name: k.name,
+            senderName: k.sender_name,
+            url: k.url,
+            verified: !!k.verified,
+            avatar: k.avatar,
+            date: k.created_at ? new Date(k.created_at).toLocaleDateString('nl-NL') : '',
+        });
+
+        // ============== HELPERS ==============
+        const wrapText = (ctx, text, maxWidth) => {
+            const paragraphs = String(text ?? '').split('\n');
+            const lines = [];
+            for (const para of paragraphs) {
+                if (para === '') { lines.push(''); continue; }
+                const words = para.split(' ');
+                let line = words[0] ?? '';
+                for (let i = 1; i < words.length; i++) {
+                    const w = words[i];
+                    if (ctx.measureText(line + ' ' + w).width < maxWidth) line += ' ' + w;
+                    else { lines.push(line); line = w; }
+                }
+                lines.push(line);
+            }
+            return lines;
+        };
+
+        const loadImg = (src) => new Promise((res, rej) => {
+            const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src;
+        });
+
+        const truncate = (ctx, text, maxW, fontStr) => {
+            ctx.font = fontStr;
+            if (ctx.measureText(text).width <= maxW) return text;
+            let t = text;
+            while (t.length > 0 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+            return t + '…';
+        };
+
+        const fileToImageData = (file) => new Promise((res, rej) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const MAX = 1500;
+                    let w = img.naturalWidth, h = img.naturalHeight;
+                    const longest = Math.max(w, h);
+                    if (longest <= MAX) return res({ src: e.target.result, width: w, height: h });
+                    const scale = MAX / longest;
+                    w = Math.round(w * scale); h = Math.round(h * scale);
+                    const c = document.createElement('canvas');
+                    c.width = w; c.height = h;
+                    c.getContext('2d').drawImage(img, 0, 0, w, h);
+                    const isJpeg = file.type === 'image/jpeg' || file.type === 'image/jpg';
+                    const compressed = isJpeg ? c.toDataURL('image/jpeg', 0.85) : c.toDataURL('image/png');
+                    res({ src: compressed, width: w, height: h });
+                };
+                img.onerror = rej;
+                img.src = e.target.result;
+            };
+            reader.onerror = rej;
+            reader.readAsDataURL(file);
+        });
+
+        const drawVerified = (ctx, x, y, r) => {
+            ctx.save();
+            ctx.fillStyle = '#1d9bf0';
+            ctx.beginPath(); ctx.arc(x + r, y + r, r, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = r * 0.32; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x + r * 0.55, y + r * 1.0);
+            ctx.lineTo(x + r * 0.9, y + r * 1.35);
+            ctx.lineTo(x + r * 1.45, y + r * 0.7);
+            ctx.stroke();
+            ctx.restore();
+        };
+
+        const drawPlayTriangle = (ctx, cx, cy, r, color) => {
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(cx - r * 0.5, cy - r * 0.7);
+            ctx.lineTo(cx + r * 0.7, cy);
+            ctx.lineTo(cx - r * 0.5, cy + r * 0.7);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        };
+
+        // ============== ICONS (REACT) ==============
+        const Icons = {
+            Download: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>,
+            User: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+            Image: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
+            Save: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>,
+            Trash: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>,
+            Plus: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>,
+            Briefcase: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>,
+            Package: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="16.5" x2="7.5" y1="9.4" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" x2="12" y1="22.08" y2="12"/></svg>,
+            Verified: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="#1d9bf0"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.26 2.26 4.8-5.23 1.47 1.36-6.2 6.77z"/></svg>,
+        };
+
+        // ============== LAYOUT METRICS ==============
+        function computeMetrics({ placement, content, style, displaySize }) {
+            const phoneW = style.phoneWidth;
+            const sliderH = style.phoneHeight;
+            const measure = document.createElement('canvas').getContext('2d');
+
+            if (placement === 'display-banner') {
+                const ds = DISPLAY_SIZES[displaySize] || DISPLAY_SIZES['300x250'];
+                return { width: ds.w, height: ds.h, frame: 'banner', layout: ds.layout };
+            }
+
+            // Phone-frame placements
+            if (placement === 'search-mobile') {
+                // status(50) + search-bar(60) + tabs(44) + sponsored(24) + brand(36) + headline(28)
+                // + description(textH) + sitelinks(N*24+8) + buffer
+                measure.font = `400 13px "Inter", sans-serif`;
+                const descLines = wrapText(measure, content.description || '', phoneW - 32);
+                const descH = descLines.length * 18;
+                const sitelinks = (content.sitelinks || []).filter(Boolean);
+                const slH = sitelinks.length > 0 ? 8 + sitelinks.length * 32 : 0;
+                const total = 50 + 60 + 44 + 24 + 36 + 28 + descH + 8 + slH + 20;
+                return { width: phoneW, height: Math.max(sliderH, Math.ceil(total)), frame: 'phone' };
+            }
+            if (placement === 'youtube-feed') {
+                // status(50) + topbar(44) + tabs(36) + thumb(phoneW*9/16) + meta(80) + buffer
+                const thumbH = phoneW * 9 / 16;
+                measure.font = `500 14px "Roboto", sans-serif`;
+                const titleLines = wrapText(measure, content.youtubeTitle || '', phoneW - 32);
+                const titleH = Math.min(2, titleLines.length) * 20;
+                const total = 50 + 44 + 36 + thumbH + 16 + titleH + 22 + 24;
+                return { width: phoneW, height: Math.max(sliderH, Math.ceil(total)), frame: 'phone', thumbH };
+            }
+            if (placement === 'discover-feed') {
+                // status(50) + topbar(50) + card padding + image (4:5) + headline + source + actions
+                const imgAspect = content.mainImage
+                    ? content.mainImage.height / content.mainImage.width
+                    : (1350 / 1080);
+                const imgH = phoneW * imgAspect;
+                measure.font = `600 17px "Inter", sans-serif`;
+                const headlineLines = wrapText(measure, content.headline || '', phoneW - 32);
+                const headlineH = headlineLines.length * 24;
+                const total = 50 + 50 + imgH + 16 + headlineH + 20 + 36 + 16;
+                return { width: phoneW, height: Math.max(sliderH, Math.ceil(total)), frame: 'phone', imgH };
+            }
+
+            return { width: phoneW, height: sliderH, frame: 'phone' };
+        }
+
+        // ============== CANVAS RENDERERS ==============
+
+        async function renderSearchMobile(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, content, fontBold, fontReg, robotoBold, robotoReg, currentY } = p;
+            let y = currentY; // y starts after status bar (currentY = 50*scale)
+
+            // === Search bar (rounded pill) ===
+            const sbY = y + 6 * scale;
+            const sbH = 40 * scale;
+            const sbX = phoneX + 12 * scale;
+            const sbW = phoneW - 24 * scale;
+            ctx.fillStyle = '#f1f3f4';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(sbX, sbY, sbW, sbH, 22 * scale);
+            else ctx.rect(sbX, sbY, sbW, sbH);
+            ctx.fill();
+
+            // Google G-logo (simplified colored circle with G)
+            const gX = sbX + 14 * scale, gY = sbY + sbH / 2;
+            ctx.fillStyle = '#4285f4';
+            ctx.beginPath(); ctx.arc(gX + 8 * scale, gY, 9 * scale, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = robotoBold(11);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('G', gX + 8 * scale, gY + 0.5 * scale);
+            ctx.textBaseline = 'alphabetic';
+
+            // Query text
+            ctx.fillStyle = '#202124';
+            ctx.font = robotoReg(14);
+            ctx.textAlign = 'left';
+            const queryX = gX + 24 * scale;
+            const queryMaxW = sbW - 50 * scale;
+            ctx.fillText(truncate(ctx, content.searchQuery || '', queryMaxW, robotoReg(14)), queryX, sbY + sbH / 2 + 4 * scale);
+
+            // Mic icon (simplified circle on right)
+            ctx.fillStyle = '#5f6368';
+            ctx.beginPath();
+            ctx.arc(sbX + sbW - 18 * scale, sbY + sbH / 2, 4 * scale, 0, Math.PI * 2);
+            ctx.fill();
+
+            y = sbY + sbH + 16 * scale;
+
+            // === Tab strip ===
+            const tabs = ['Alles', 'Afbeeldingen', "Video's", 'Nieuws', 'Maps'];
+            ctx.fillStyle = '#5f6368';
+            ctx.font = robotoReg(13);
+            ctx.textAlign = 'left';
+            let tx = phoneX + 16 * scale;
+            const tabPad = 16 * scale;
+            const tabPositions = [];
+            for (const t of tabs) {
+                tabPositions.push({ t, x: tx });
+                ctx.fillText(t, tx, y + 14 * scale);
+                tx += ctx.measureText(t).width + tabPad;
+            }
+            // Active "Alles" highlighted in blue
+            const allesPos = tabPositions[0];
+            ctx.fillStyle = '#1a73e8';
+            ctx.font = robotoBold(13);
+            ctx.fillText('Alles', allesPos.x, y + 14 * scale);
+            ctx.fillRect(allesPos.x, y + 22 * scale, ctx.measureText('Alles').width, 2 * scale);
+
+            // Divider
+            ctx.fillStyle = '#dadce0';
+            ctx.fillRect(phoneX, y + 30 * scale, phoneW, 1);
+
+            y += 44 * scale;
+
+            // === Sponsored label ===
+            ctx.fillStyle = '#202124';
+            ctx.font = robotoBold(12);
+            ctx.fillText('Sponsored', phoneX + 16 * scale, y + 12 * scale);
+            // Info icon (small circle with i)
+            const iX = phoneX + 16 * scale + ctx.measureText('Sponsored').width + 6 * scale;
+            ctx.strokeStyle = '#5f6368';
+            ctx.lineWidth = 1 * scale;
+            ctx.beginPath(); ctx.arc(iX + 6 * scale, y + 8 * scale, 5 * scale, 0, Math.PI * 2); ctx.stroke();
+            ctx.fillStyle = '#5f6368';
+            ctx.font = robotoBold(8);
+            ctx.textAlign = 'center';
+            ctx.fillText('i', iX + 6 * scale, y + 11 * scale);
+            ctx.textAlign = 'left';
+
+            y += 26 * scale;
+
+            // === Brand row: avatar + name + url ===
+            const avatarSize = 24 * scale;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(phoneX + 16 * scale + avatarSize / 2, y + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, phoneX + 16 * scale, y, avatarSize, avatarSize);
+            else { ctx.fillStyle = '#dadce0'; ctx.fillRect(phoneX + 16 * scale, y, avatarSize, avatarSize); }
+            ctx.restore();
+
+            ctx.fillStyle = '#202124';
+            ctx.font = robotoBold(13);
+            const brandX = phoneX + 16 * scale + avatarSize + 10 * scale;
+            ctx.fillText(content.name || '', brandX, y + 11 * scale);
+
+            ctx.fillStyle = '#5f6368';
+            ctx.font = robotoReg(12);
+            ctx.fillText(content.url || '', brandX, y + 24 * scale);
+
+            y += 40 * scale;
+
+            // === Headline ===
+            ctx.fillStyle = '#1a0dab'; // classic Google ad headline color
+            ctx.font = robotoReg(18);
+            ctx.fillText(truncate(ctx, content.headline || '', phoneW - 32 * scale, robotoReg(18)), phoneX + 16 * scale, y + 16 * scale);
+
+            y += 28 * scale;
+
+            // === Description ===
+            ctx.fillStyle = '#4d5156';
+            ctx.font = robotoReg(13);
+            const descLines = wrapText(ctx, content.description || '', phoneW - 32 * scale);
+            for (const line of descLines) {
+                ctx.fillText(line, phoneX + 16 * scale, y + 12 * scale);
+                y += 18 * scale;
+            }
+
+            y += 8 * scale;
+
+            // === Sitelinks ===
+            const sitelinks = (content.sitelinks || []).filter(Boolean);
+            for (const sl of sitelinks) {
+                ctx.fillStyle = '#dadce0';
+                ctx.fillRect(phoneX + 16 * scale, y, phoneW - 32 * scale, 1);
+                y += 8 * scale;
+                ctx.fillStyle = '#1a0dab';
+                ctx.font = robotoReg(14);
+                ctx.fillText(sl, phoneX + 16 * scale, y + 14 * scale);
+                // chevron right
+                ctx.strokeStyle = '#5f6368';
+                ctx.lineWidth = 1.5 * scale;
+                const chevX = phoneX + phoneW - 24 * scale;
+                ctx.beginPath();
+                ctx.moveTo(chevX, y + 8 * scale);
+                ctx.lineTo(chevX + 5 * scale, y + 14 * scale);
+                ctx.lineTo(chevX, y + 20 * scale);
+                ctx.stroke();
+                y += 24 * scale;
+            }
+        }
+
+        async function renderYouTubeFeed(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, content, fontBold, fontReg, robotoBold, robotoReg, currentY, metrics } = p;
+            let y = currentY; // start after status bar
+
+            // === YouTube top bar ===
+            const tbH = 44 * scale;
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(phoneX, y, phoneW, tbH);
+
+            // YT logo: red play triangle in red rounded rect + "YouTube" text
+            const ytLogoX = phoneX + 14 * scale;
+            const ytLogoY = y + tbH / 2;
+            // Red rounded rect background
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath();
+            const ytW = 20 * scale, ytH = 14 * scale;
+            if (ctx.roundRect) ctx.roundRect(ytLogoX, ytLogoY - ytH / 2, ytW, ytH, 4 * scale);
+            else ctx.rect(ytLogoX, ytLogoY - ytH / 2, ytW, ytH);
+            ctx.fill();
+            // White play triangle inside
+            drawPlayTriangle(ctx, ytLogoX + ytW / 2, ytLogoY, 4 * scale, '#fff');
+
+            ctx.fillStyle = '#0f0f0f';
+            ctx.font = `700 16px "Roboto", sans-serif`;
+            // scale handling
+            ctx.font = `700 ${16 * scale}px "Roboto", sans-serif`;
+            ctx.fillText('YouTube', ytLogoX + ytW + 4 * scale, ytLogoY + 5 * scale);
+
+            y += tbH;
+
+            // === Tab strip (Home / Shorts / Subscriptions) ===
+            const tabsH = 36 * scale;
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(phoneX, y, phoneW, tabsH);
+
+            const ytTabs = [
+                { label: 'Home', active: true },
+                { label: 'Shorts', active: false },
+                { label: 'Abonnementen', active: false },
+            ];
+            let tx = phoneX + 14 * scale;
+            for (const tab of ytTabs) {
+                ctx.fillStyle = tab.active ? '#0f0f0f' : '#606060';
+                ctx.font = `${tab.active ? 600 : 400} ${13 * scale}px "Roboto", sans-serif`;
+                const tw = ctx.measureText(tab.label).width;
+                if (tab.active) {
+                    // Pill background
+                    ctx.fillStyle = '#0f0f0f';
+                    ctx.beginPath();
+                    if (ctx.roundRect) ctx.roundRect(tx - 8 * scale, y + 8 * scale, tw + 16 * scale, 22 * scale, 11 * scale);
+                    else ctx.rect(tx - 8 * scale, y + 8 * scale, tw + 16 * scale, 22 * scale);
+                    ctx.fill();
+                    ctx.fillStyle = '#fff';
+                }
+                ctx.fillText(tab.label, tx, y + 24 * scale);
+                tx += tw + 24 * scale;
+            }
+
+            y += tabsH;
+
+            // === Video thumbnail ===
+            const thumbH = phoneW * 9 / 16;
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            if (mainImg) {
+                // Cover-fit
+                const ratio = mainImg.width / mainImg.height;
+                const targetRatio = phoneW / thumbH;
+                let sw, sh, sx, sy;
+                if (ratio > targetRatio) { sh = mainImg.height; sw = sh * targetRatio; sy = 0; sx = (mainImg.width - sw) / 2; }
+                else { sw = mainImg.width; sh = sw / targetRatio; sx = 0; sy = (mainImg.height - sh) / 2; }
+                ctx.drawImage(mainImg, sx, sy, sw, sh, phoneX, y, phoneW, thumbH);
+            } else {
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(phoneX, y, phoneW, thumbH);
+            }
+
+            // Sponsored overlay top-left
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX + 8 * scale, y + 8 * scale, 70 * scale, 20 * scale, 4 * scale);
+            else ctx.rect(phoneX + 8 * scale, y + 8 * scale, 70 * scale, 20 * scale);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = `500 ${10 * scale}px "Roboto", sans-serif`;
+            ctx.fillText('Gesponsord', phoneX + 14 * scale, y + 22 * scale);
+
+            // Duration overlay bottom-right
+            const durText = content.videoDuration || '0:30';
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.font = `500 ${11 * scale}px "Roboto", sans-serif`;
+            const durW = ctx.measureText(durText).width + 12 * scale;
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX + phoneW - durW - 8 * scale, y + thumbH - 24 * scale, durW, 18 * scale, 3 * scale);
+            else ctx.rect(phoneX + phoneW - durW - 8 * scale, y + thumbH - 24 * scale, durW, 18 * scale);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText(durText, phoneX + phoneW - durW - 2 * scale, y + thumbH - 11 * scale);
+
+            y += thumbH;
+
+            // === Title + meta row ===
+            const padBlock = 12 * scale;
+            const blockX = phoneX + 14 * scale;
+            const blockY = y + padBlock;
+
+            // Channel avatar (left)
+            const avSize = 36 * scale;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(blockX + avSize / 2, blockY + avSize / 2, avSize / 2, 0, Math.PI * 2);
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, blockX, blockY, avSize, avSize);
+            else { ctx.fillStyle = '#dadce0'; ctx.fillRect(blockX, blockY, avSize, avSize); }
+            ctx.restore();
+
+            // Title (2 lines max)
+            ctx.fillStyle = '#0f0f0f';
+            ctx.font = `500 ${14 * scale}px "Roboto", sans-serif`;
+            const titleX = blockX + avSize + 10 * scale;
+            const titleW = phoneW - (titleX - phoneX) - 24 * scale;
+            const titleLines = wrapText(ctx, content.youtubeTitle || '', titleW);
+            let ty = blockY + 14 * scale;
+            for (let i = 0; i < Math.min(2, titleLines.length); i++) {
+                let line = titleLines[i];
+                if (i === 1 && titleLines.length > 2) {
+                    // Truncate last visible line with ...
+                    const maxLineW = titleW;
+                    while (ctx.measureText(line + '…').width > maxLineW && line.length > 0) line = line.slice(0, -1);
+                    line += '…';
+                }
+                ctx.fillText(line, titleX, ty);
+                ty += 18 * scale;
+            }
+
+            // Meta line
+            ctx.fillStyle = '#606060';
+            ctx.font = `400 ${12 * scale}px "Roboto", sans-serif`;
+            const meta = `${content.name || 'Channel'} · ${content.videoViews || ''} weergaven · ${content.videoTimeAgo || ''}`;
+            ctx.fillText(truncate(ctx, meta, titleW, `400 ${12 * scale}px "Roboto", sans-serif`), titleX, ty + 4 * scale);
+        }
+
+        async function renderDiscoverFeed(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, content, fontBold, fontReg, robotoBold, robotoReg, currentY, metrics } = p;
+            let y = currentY;
+
+            // === Top bar with G logo + "Discover" ===
+            const tbH = 50 * scale;
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(phoneX, y, phoneW, tbH);
+
+            // Multi-color G (simplified single blue circle with G)
+            const gx = phoneX + 16 * scale, gy = y + tbH / 2;
+            ctx.fillStyle = '#4285f4';
+            ctx.beginPath(); ctx.arc(gx + 12 * scale, gy, 12 * scale, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = `700 ${15 * scale}px "Roboto", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('G', gx + 12 * scale, gy + 1 * scale);
+            ctx.textBaseline = 'alphabetic';
+            ctx.textAlign = 'left';
+
+            ctx.fillStyle = '#202124';
+            ctx.font = `500 ${16 * scale}px "Roboto", sans-serif`;
+            ctx.fillText('Discover', gx + 32 * scale, gy + 5 * scale);
+
+            // Profile circle right
+            ctx.fillStyle = '#dadce0';
+            ctx.beginPath(); ctx.arc(phoneX + phoneW - 22 * scale, gy, 12 * scale, 0, Math.PI * 2); ctx.fill();
+
+            y += tbH;
+
+            // === Card image (full width, aspect from content) ===
+            const imgH = metrics.imgH * scale;
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            if (mainImg) ctx.drawImage(mainImg, phoneX, y, phoneW, imgH);
+            else { ctx.fillStyle = '#dadce0'; ctx.fillRect(phoneX, y, phoneW, imgH); }
+
+            y += imgH;
+
+            // === Card content (white below image) ===
+            const cardPad = 16 * scale;
+            y += cardPad;
+
+            // Headline (large, bold)
+            ctx.fillStyle = '#202124';
+            ctx.font = `600 ${18 * scale}px "Inter", sans-serif`;
+            const hLines = wrapText(ctx, content.headline || '', phoneW - cardPad * 2);
+            for (const line of hLines) {
+                ctx.fillText(line, phoneX + cardPad, y + 18 * scale);
+                y += 24 * scale;
+            }
+            y += 4 * scale;
+
+            // Source row: avatar + name + " · Sponsored"
+            const srcSize = 16 * scale;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(phoneX + cardPad + srcSize / 2, y + srcSize / 2, srcSize / 2, 0, Math.PI * 2);
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, phoneX + cardPad, y, srcSize, srcSize);
+            else { ctx.fillStyle = '#dadce0'; ctx.fillRect(phoneX + cardPad, y, srcSize, srcSize); }
+            ctx.restore();
+
+            ctx.fillStyle = '#5f6368';
+            ctx.font = `400 ${11 * scale}px "Roboto", sans-serif`;
+            const srcText = `${content.url || content.name || ''} · Gesponsord`;
+            ctx.fillText(srcText, phoneX + cardPad + srcSize + 8 * scale, y + 12 * scale);
+
+            y += 24 * scale;
+
+            // Action row: heart, comment-style icon, share
+            const iconR = 8 * scale;
+            const iy = y + 14 * scale;
+            // Heart outline
+            ctx.strokeStyle = '#5f6368';
+            ctx.lineWidth = 1.5 * scale;
+            const hx = phoneX + cardPad;
+            ctx.beginPath();
+            ctx.moveTo(hx, iy);
+            ctx.bezierCurveTo(hx, iy - 5 * scale, hx + 5 * scale, iy - 5 * scale, hx + 7 * scale, iy);
+            ctx.bezierCurveTo(hx + 9 * scale, iy - 5 * scale, hx + 14 * scale, iy - 5 * scale, hx + 14 * scale, iy);
+            ctx.bezierCurveTo(hx + 14 * scale, iy + 4 * scale, hx + 7 * scale, iy + 9 * scale, hx + 7 * scale, iy + 9 * scale);
+            ctx.bezierCurveTo(hx + 7 * scale, iy + 9 * scale, hx, iy + 4 * scale, hx, iy);
+            ctx.closePath();
+            ctx.stroke();
+            // Three-dot menu right
+            ctx.fillStyle = '#5f6368';
+            for (let i = 0; i < 3; i++) {
+                ctx.beginPath();
+                ctx.arc(phoneX + phoneW - cardPad - i * 6 * scale - 2 * scale, iy + 4 * scale, 1.5 * scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        async function renderDisplayBanner(ctx, p) {
+            const { scale, content, style, displaySize } = p;
+            const ds = DISPLAY_SIZES[displaySize] || DISPLAY_SIZES['300x250'];
+            const W = ds.w * scale;
+            const H = ds.h * scale;
+            const pad = (style.padding || 40) * scale;
+
+            // Banner background (white) with subtle border
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(pad, pad, W, H);
+            ctx.strokeStyle = '#e0e0e0';
+            ctx.lineWidth = 1 * scale;
+            ctx.strokeRect(pad, pad, W, H);
+
+            const fontReg = (size) => `400 ${size * scale}px "Inter", sans-serif`;
+            const fontBold = (size) => `600 ${size * scale}px "Inter", sans-serif`;
+            const fontHeadline = (size) => `700 ${size * scale}px "Inter", sans-serif`;
+
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+
+            if (ds.layout === 'tall') {
+                // 160x600 — narrow vertical, stack: brand top, image middle, headline below, button bottom
+                const innerPad = 8 * scale;
+                let y = pad + innerPad;
+
+                // Avatar top center
+                const avSize = 28 * scale;
+                const avX = pad + (W - avSize) / 2;
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(avX + avSize / 2, y + avSize / 2, avSize / 2, 0, Math.PI * 2);
+                ctx.clip();
+                if (avatarImg) ctx.drawImage(avatarImg, avX, y, avSize, avSize);
+                else { ctx.fillStyle = '#e4e4e7'; ctx.fillRect(avX, y, avSize, avSize); }
+                ctx.restore();
+
+                y += avSize + 4 * scale;
+                ctx.fillStyle = '#202124';
+                ctx.font = fontBold(11);
+                ctx.textAlign = 'center';
+                ctx.fillText(truncate(ctx, content.name || '', W - innerPad * 2, fontBold(11)), pad + W / 2, y + 8 * scale);
+
+                y += 18 * scale;
+
+                // Image (square in center)
+                const imgSize = W - innerPad * 2;
+                if (mainImg) {
+                    const ratio = mainImg.width / mainImg.height;
+                    let sw, sh, sx, sy;
+                    if (ratio > 1) { sh = mainImg.height; sw = sh; sy = 0; sx = (mainImg.width - sw) / 2; }
+                    else { sw = mainImg.width; sh = sw; sx = 0; sy = (mainImg.height - sh) / 2; }
+                    ctx.drawImage(mainImg, sx, sy, sw, sh, pad + innerPad, y, imgSize, imgSize);
+                } else {
+                    ctx.fillStyle = '#f4f4f5';
+                    ctx.fillRect(pad + innerPad, y, imgSize, imgSize);
+                }
+
+                y += imgSize + 12 * scale;
+
+                // Headline
+                ctx.fillStyle = '#202124';
+                ctx.font = fontHeadline(14);
+                ctx.textAlign = 'center';
+                const hLines = wrapText(ctx, content.headline || '', W - innerPad * 2);
+                for (let i = 0; i < Math.min(3, hLines.length); i++) {
+                    ctx.fillText(hLines[i], pad + W / 2, y + 14 * scale);
+                    y += 18 * scale;
+                }
+
+                // Button at bottom
+                const btnH = 32 * scale;
+                const btnY = pad + H - innerPad - btnH;
+                ctx.fillStyle = '#1a73e8';
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(pad + innerPad, btnY, W - innerPad * 2, btnH, 4 * scale);
+                else ctx.rect(pad + innerPad, btnY, W - innerPad * 2, btnH);
+                ctx.fill();
+                ctx.fillStyle = '#fff';
+                ctx.font = fontBold(12);
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(content.buttonText || 'Lees meer', pad + W / 2, btnY + btnH / 2);
+                ctx.textBaseline = 'alphabetic';
+                ctx.textAlign = 'left';
+            } else {
+                // Vertical layout (300x250, 336x280, 250x250)
+                // Top: brand row | Middle: image (left) + text+button (right) for landscape-ish
+                // Actually for these square-ish sizes: brand row top, image full-width, headline+desc, button bottom
+                const innerPad = 12 * scale;
+                let y = pad + innerPad;
+
+                // Brand row: avatar + name (left), small "Sponsored" right
+                const avSize = 24 * scale;
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(pad + innerPad + avSize / 2, y + avSize / 2, avSize / 2, 0, Math.PI * 2);
+                ctx.clip();
+                if (avatarImg) ctx.drawImage(avatarImg, pad + innerPad, y, avSize, avSize);
+                else { ctx.fillStyle = '#e4e4e7'; ctx.fillRect(pad + innerPad, y, avSize, avSize); }
+                ctx.restore();
+
+                ctx.fillStyle = '#202124';
+                ctx.font = fontBold(12);
+                ctx.textAlign = 'left';
+                const brandX = pad + innerPad + avSize + 8 * scale;
+                ctx.fillText(truncate(ctx, content.name || '', W - 90 * scale, fontBold(12)), brandX, y + 16 * scale);
+
+                ctx.fillStyle = '#5f6368';
+                ctx.font = fontReg(9);
+                ctx.textAlign = 'right';
+                ctx.fillText('Gesponsord', pad + W - innerPad, y + 14 * scale);
+                ctx.textAlign = 'left';
+
+                y += avSize + 8 * scale;
+
+                // Image
+                const imgH = Math.min(H * 0.5, (W - innerPad * 2) * 0.55);
+                const imgY = y;
+                if (mainImg) {
+                    const ratio = mainImg.width / mainImg.height;
+                    const imgW = W - innerPad * 2;
+                    const targetRatio = imgW / imgH;
+                    let sw, sh, sx, sy;
+                    if (ratio > targetRatio) { sh = mainImg.height; sw = sh * targetRatio; sy = 0; sx = (mainImg.width - sw) / 2; }
+                    else { sw = mainImg.width; sh = sw / targetRatio; sx = 0; sy = (mainImg.height - sh) / 2; }
+                    ctx.drawImage(mainImg, sx, sy, sw, sh, pad + innerPad, imgY, imgW, imgH);
+                } else {
+                    ctx.fillStyle = '#f4f4f5';
+                    ctx.fillRect(pad + innerPad, imgY, W - innerPad * 2, imgH);
+                }
+
+                y += imgH + 10 * scale;
+
+                // Headline (1-2 lines)
+                ctx.fillStyle = '#202124';
+                ctx.font = fontHeadline(14);
+                const hLines = wrapText(ctx, content.headline || '', W - innerPad * 2);
+                const maxHLines = Math.min(2, hLines.length);
+                for (let i = 0; i < maxHLines; i++) {
+                    let line = hLines[i];
+                    if (i === maxHLines - 1 && hLines.length > maxHLines) {
+                        while (ctx.measureText(line + '…').width > W - innerPad * 2 && line.length > 0) line = line.slice(0, -1);
+                        line += '…';
+                    }
+                    ctx.fillText(line, pad + innerPad, y + 14 * scale);
+                    y += 18 * scale;
+                }
+
+                // Button (right-aligned, pill)
+                ctx.font = fontBold(12);
+                const btnText = content.buttonText || 'Lees meer';
+                const btnPadX = 14 * scale;
+                const btnTextW = ctx.measureText(btnText).width;
+                const btnW = btnTextW + btnPadX * 2;
+                const btnH = 32 * scale;
+                const btnX = pad + W - innerPad - btnW;
+                const btnY = pad + H - innerPad - btnH;
+                ctx.fillStyle = '#1a73e8';
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(btnX, btnY, btnW, btnH, 4 * scale);
+                else ctx.rect(btnX, btnY, btnW, btnH);
+                ctx.fill();
+                ctx.fillStyle = '#fff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(btnText, btnX + btnW / 2, btnY + btnH / 2);
+                ctx.textBaseline = 'alphabetic';
+                ctx.textAlign = 'left';
+            }
+        }
+
+        // ============== PREVIEW COMPONENTS ==============
+        // For simplicity, the preview re-uses the same canvas via offscreen render → <img>.
+        // This keeps preview exactly equal to export. Re-renders on every state change.
+        function CanvasPreview({ placement, displaySize, content, style }) {
+            const [src, setSrc] = useState(null);
+            useEffect(() => {
+                let cancelled = false;
+                (async () => {
+                    try {
+                        const canvas = await renderToCanvas({ placement, displaySize, content, style });
+                        if (cancelled) return;
+                        setSrc(canvas.toDataURL('image/png'));
+                    } catch (e) { console.error('Preview render error', e); }
+                })();
+                return () => { cancelled = true; };
+            }, [placement, displaySize, content, style]);
+
+            if (!src) return <div className="text-gray-500 text-sm">Mockup wordt opgebouwd…</div>;
+            return <img src={src} className="max-w-full max-h-full" alt="Mockup preview" />;
+        }
+
+        // ============== CANVAS DISPATCH ==============
+        async function renderToCanvas({ placement, displaySize, content, style }) {
+            const scale = 2;
+            const pad = (style.padding || 40) * scale;
+            const metrics = computeMetrics({ placement, content, style, displaySize });
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            const fontBold = (sz) => `600 ${sz * scale}px "Inter", sans-serif`;
+            const fontReg = (sz) => `400 ${sz * scale}px "Inter", sans-serif`;
+            const robotoBold = (sz) => `500 ${sz * scale}px "Roboto", sans-serif`;
+            const robotoReg = (sz) => `400 ${sz * scale}px "Roboto", sans-serif`;
+
+            if (metrics.frame === 'banner') {
+                // Display banner — flat canvas, white margin around banner
+                const W = metrics.width * scale;
+                const H = metrics.height * scale;
+                canvas.width = W + pad * 2;
+                canvas.height = H + pad * 2;
+
+                // Background (white page context)
+                ctx.fillStyle = '#fafafa';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                await renderDisplayBanner(ctx, {
+                    scale, content, style, displaySize: displaySize || '300x250',
+                });
+                return canvas;
+            }
+
+            // Phone-frame placements
+            const phoneW = metrics.width * scale;
+            const phoneH = metrics.height * scale;
+            canvas.width = phoneW + pad * 2;
+            canvas.height = phoneH + pad * 2;
+
+            // Background
+            ctx.fillStyle = '#fafafa';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const phoneX = pad, phoneY = pad;
+            const radius = 40 * scale;
+
+            // Phone shadow
+            if ((style.deviceFrame || 'shadow') === 'shadow') {
+                ctx.shadowColor = 'rgba(0,0,0,0.18)';
+                ctx.shadowBlur = 40 * scale;
+                ctx.shadowOffsetY = 16 * scale;
+            }
+
+            // Phone body
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+            else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+            ctx.fill();
+
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetY = 0;
+
+            if ((style.deviceFrame || 'shadow') === 'outline') {
+                ctx.strokeStyle = '#d4d4d8';
+                ctx.lineWidth = 1.5 * scale;
+                ctx.stroke();
+            }
+
+            // Clip
+            ctx.save();
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+            else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+            ctx.clip();
+
+            // Status bar time
+            ctx.fillStyle = '#000';
+            ctx.font = fontBold(12);
+            ctx.fillText('12:00', phoneX + 30 * scale, phoneY + 30 * scale);
+
+            const renderArgs = {
+                scale, phoneX, phoneY, phoneW, phoneH, content, style,
+                fontBold, fontReg, robotoBold, robotoReg,
+                currentY: phoneY + 50 * scale, metrics,
+            };
+
+            if (placement === 'search-mobile') await renderSearchMobile(ctx, renderArgs);
+            else if (placement === 'youtube-feed') await renderYouTubeFeed(ctx, renderArgs);
+            else if (placement === 'discover-feed') await renderDiscoverFeed(ctx, renderArgs);
+
+            ctx.restore();
+
+            // Notch
+            const notchW = 100 * scale, notchH = 25 * scale;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH, 12 * scale);
+            else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
+            ctx.fill();
+
+            return canvas;
+        }
+
+        // ============== PASSWORD GATE ==============
+        function PasswordGate({ onAuthed }) {
+            const [pw, setPw] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const submit = async (e) => {
+                e.preventDefault();
+                if (!pw) return;
+                setLoading(true);
+                setError('');
+                localStorage.setItem(PW_STORAGE_KEY, pw);
+                try {
+                    await apiCall('pmax_designs', 'list');
+                    onAuthed();
+                } catch (err) {
+                    localStorage.removeItem(PW_STORAGE_KEY);
+                    if (err.message === 'WRONG_PASSWORD') setError('Onjuist wachtwoord.');
+                    else setError('Kan geen verbinding maken: ' + err.message);
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-dark-900 flex items-center justify-center z-50 p-4">
+                    <form onSubmit={submit} className="bg-dark-800 p-8 rounded-2xl border border-white/10 w-full max-w-sm space-y-4 shadow-2xl">
+                        <div>
+                            <h1 className="text-2xl font-bold bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent">PmaxFrame</h1>
+                            <p className="text-sm text-gray-400 mt-1">Performance Max ad mockups. Voer het team-wachtwoord in.</p>
+                        </div>
+                        <input type="password" value={pw} onChange={e => setPw(e.target.value)}
+                            className="w-full bg-dark-900 border border-gray-700 rounded px-3 py-2.5 text-sm focus:border-blue-500 outline-none"
+                            placeholder="Wachtwoord" autoFocus />
+                        {error && <p className="text-xs text-red-400">{error}</p>}
+                        <button type="submit" disabled={loading || !pw}
+                            className="w-full bg-white text-black font-bold py-2.5 rounded-lg hover:bg-gray-200 disabled:opacity-50">
+                            {loading ? 'Verifiëren…' : 'Inloggen'}
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        // ============== APP ==============
+        function App() {
+            const [authed, setAuthed] = useState(false);
+            const [authChecking, setAuthChecking] = useState(true);
+
+            useEffect(() => {
+                const pw = localStorage.getItem(PW_STORAGE_KEY);
+                if (!pw) { setAuthChecking(false); return; }
+                apiCall('pmax_designs', 'list')
+                    .then(() => { setAuthed(true); setAuthChecking(false); })
+                    .catch(() => { setAuthChecking(false); });
+            }, []);
+
+            if (authChecking) {
+                return <div className="h-screen flex items-center justify-center text-gray-400 text-sm">Verbinding maken…</div>;
+            }
+            if (!authed) return <PasswordGate onAuthed={() => setAuthed(true)} />;
+
+            return <Workspace onLogout={() => { localStorage.removeItem(PW_STORAGE_KEY); setAuthed(false); }} />;
+        }
+
+        function Workspace({ onLogout }) {
+            const [placement, setPlacement] = useState('search-mobile');
+            const [displaySize, setDisplaySize] = useState('300x250');
+            const [sidebarTab, setSidebarTab] = useState('edit');
+            const [loading, setLoading] = useState(false);
+            const [batchProgress, setBatchProgress] = useState(null);
+            const [savedDesigns, setSavedDesigns] = useState([]);
+            const [brandKits, setBrandKits] = useState([]);
+            const [dropping, setDropping] = useState(false);
+
+            const [content, setContent] = useState({
+                avatar: null,
+                mainImage: null,
+                name: 'Cosis',
+                url: 'cosis.nl',
+                verified: false,
+                headline: 'Werken bij Cosis',
+                description: "Echte verhalen van onze collega's. Geen script. Geen mooi-praterij.",
+                buttonText: 'Lees meer',
+                searchQuery: 'werken bij cosis',
+                sitelinks: ['Onze cultuur', 'Vacatures', 'Verhalen', 'Contact'],
+                youtubeTitle: "Hoe is werken bij Cosis écht?",
+                videoViews: '12K',
+                videoTimeAgo: '2 dagen geleden',
+                videoDuration: '2:14',
+            });
+
+            const [style, setStyle] = useState({
+                bgColor1: '#ffffff',
+                padding: 40,
+                phoneWidth: 360,
+                phoneHeight: 700,
+                deviceFrame: 'shadow',
+            });
+
+            const [exportOpts, setExportOpts] = useState({
+                placements: { 'search-mobile': true, 'youtube-feed': false, 'discover-feed': false, 'display-banner': false },
+                displaySizes: { '300x250': true, '336x280': false, '250x250': false, '160x600': false },
+            });
+
+            useEffect(() => {
+                (async () => {
+                    try {
+                        const [d, b] = await Promise.all([
+                            apiCall('pmax_designs', 'list'),
+                            apiCall('brand_kits', 'list'),
+                        ]);
+                        setSavedDesigns(d.map(fromDbDesign));
+                        setBrandKits(b.map(fromDbKit));
+                    } catch (e) { console.error('Load failed:', e); }
+                })();
+            }, []);
+
+            useEffect(() => {
+                const handlePaste = async (e) => {
+                    if (!e.clipboardData) return;
+                    for (const item of e.clipboardData.items) {
+                        if (item.type.startsWith('image/')) {
+                            const file = item.getAsFile();
+                            if (file) {
+                                const data = await fileToImageData(file);
+                                setContent(prev => ({ ...prev, mainImage: data }));
+                                return;
+                            }
+                        }
+                    }
+                };
+                document.addEventListener('paste', handlePaste);
+                return () => document.removeEventListener('paste', handlePaste);
+            }, []);
+
+            const updateContent = (k, v) => setContent(prev => ({ ...prev, [k]: v }));
+            const updateStyle = (k, v) => setStyle(prev => ({ ...prev, [k]: v }));
+
+            const handleImageUpload = async (key, e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const data = await fileToImageData(file);
+                setContent(prev => ({ ...prev, [key]: data }));
+                e.target.value = '';
+            };
+
+            const handleDrop = async (e) => {
+                e.preventDefault();
+                setDropping(false);
+                const file = e.dataTransfer.files?.[0];
+                if (!file?.type.startsWith('image/')) return;
+                const data = await fileToImageData(file);
+                setContent(prev => ({ ...prev, mainImage: data }));
+            };
+
+            const updateSitelink = (i, val) => {
+                setContent(prev => {
+                    const sl = [...(prev.sitelinks || [])];
+                    sl[i] = val;
+                    return { ...prev, sitelinks: sl };
+                });
+            };
+
+            // Brand kits (cloud, gedeeld met SocialFrame)
+            const saveBrandKit = async () => {
+                const kitName = prompt('Naam voor deze brand kit (bv. Cosis):');
+                if (!kitName) return;
+                const kit = {
+                    id: Date.now(),
+                    name: kitName,
+                    avatar: content.avatar,
+                    senderName: content.name,
+                    url: content.url,
+                    verified: content.verified,
+                };
+                try {
+                    await apiCall('brand_kits', 'save', toDbKit(kit));
+                    const list = await apiCall('brand_kits', 'list');
+                    setBrandKits(list.map(fromDbKit));
+                } catch (e) { alert('Opslaan mislukt: ' + e.message); }
+            };
+
+            const loadBrandKit = (kit) => {
+                setContent(prev => ({
+                    ...prev,
+                    avatar: kit.avatar,
+                    name: kit.senderName,
+                    url: kit.url,
+                    verified: kit.verified ?? false,
+                }));
+            };
+
+            const deleteBrandKit = async (id, e) => {
+                e.stopPropagation();
+                try {
+                    await apiCall('brand_kits', 'delete', { id: String(id) });
+                    const list = await apiCall('brand_kits', 'list');
+                    setBrandKits(list.map(fromDbKit));
+                } catch (err) { alert('Verwijderen mislukt: ' + err.message); }
+            };
+
+            // Designs library (cloud, pmax-specifiek)
+            const saveDesign = async () => {
+                const newDesign = {
+                    id: Date.now(),
+                    date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    placement,
+                    displaySize: placement === 'display-banner' ? displaySize : null,
+                    content, style,
+                };
+                try {
+                    await apiCall('pmax_designs', 'save', toDbDesign(newDesign));
+                    const list = await apiCall('pmax_designs', 'list');
+                    setSavedDesigns(list.map(fromDbDesign));
+                    setSidebarTab('library');
+                } catch (e) { alert('Opslaan mislukt: ' + e.message); }
+            };
+
+            const loadDesign = (d) => {
+                if (d.placement) setPlacement(d.placement);
+                if (d.displaySize) setDisplaySize(d.displaySize);
+                setContent(d.content);
+                setStyle(d.style);
+                setSidebarTab('edit');
+            };
+
+            const deleteDesign = async (id, e) => {
+                e.stopPropagation();
+                try {
+                    await apiCall('pmax_designs', 'delete', { id: String(id) });
+                    const list = await apiCall('pmax_designs', 'list');
+                    setSavedDesigns(list.map(fromDbDesign));
+                } catch (err) { alert('Verwijderen mislukt: ' + err.message); }
+            };
+
+            const generateCanvas = async () => {
+                setLoading(true);
+                await new Promise(r => setTimeout(r, 50));
+                try {
+                    const canvas = await renderToCanvas({
+                        placement,
+                        displaySize: placement === 'display-banner' ? displaySize : null,
+                        content, style,
+                    });
+                    canvas.toBlob((blob) => {
+                        const sizeStr = placement === 'display-banner' ? `_${displaySize}` : '';
+                        saveAs(blob, `${(content.name || 'pmax').replace(/\s/g, '_')}_${placement}${sizeStr}.png`);
+                        setLoading(false);
+                    }, 'image/png');
+                } catch (e) { console.error(e); setLoading(false); }
+            };
+
+            const generateBatch = async () => {
+                const placements = Object.entries(exportOpts.placements).filter(([_, v]) => v).map(([k]) => k);
+                const sizes = Object.entries(exportOpts.displaySizes).filter(([_, v]) => v).map(([k]) => k);
+
+                if (!placements.length) {
+                    alert('Selecteer minimaal één placement.');
+                    return;
+                }
+
+                setLoading(true);
+                const zip = new JSZip();
+
+                // Build variant list: phone placements once each, display-banner = N sizes
+                const variants = [];
+                for (const p of placements) {
+                    if (p === 'display-banner') {
+                        if (!sizes.length) continue;
+                        for (const s of sizes) variants.push({ p, s });
+                    } else {
+                        variants.push({ p, s: null });
+                    }
+                }
+
+                if (!variants.length) {
+                    alert('Geen geldige varianten — kies sizes voor display-banner.');
+                    setLoading(false);
+                    return;
+                }
+
+                const total = variants.length;
+                let done = 0;
+                setBatchProgress({ done, total });
+
+                for (const { p, s } of variants) {
+                    try {
+                        const canvas = await renderToCanvas({
+                            placement: p, displaySize: s, content, style,
+                        });
+                        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+                        const sizeStr = s ? `_${s}` : '';
+                        zip.file(`${(content.name || 'pmax').replace(/\s/g, '_')}_${p}${sizeStr}.png`, blob);
+                    } catch (e) { console.error('Variant failed', p, s, e); }
+                    done++;
+                    setBatchProgress({ done, total });
+                }
+
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                saveAs(zipBlob, `${(content.name || 'pmax').replace(/\s/g, '_')}_pmaxframe.zip`);
+                setBatchProgress(null);
+                setLoading(false);
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row h-screen">
+                    <aside className="w-full md:w-96 bg-dark-800 border-r border-white/10 flex flex-col z-20 shadow-2xl">
+                        <div className="p-5 border-b border-white/10 flex-shrink-0 flex items-start justify-between gap-2">
+                            <div>
+                                <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent">PmaxFrame</h1>
+                                <p className="text-[11px] text-gray-400 mt-1">Performance Max mockups · cloud</p>
+                            </div>
+                            <button onClick={onLogout} className="text-[11px] text-gray-500 hover:text-gray-300 px-2 py-1 -mr-2 -mt-1">Uitloggen</button>
+                        </div>
+
+                        <div className="flex border-b border-white/10 flex-shrink-0">
+                            {[['edit', 'Edit'], ['library', 'Library'], ['brands', 'Brands'], ['export', 'Export']].map(([id, label]) => (
+                                <button key={id} onClick={() => setSidebarTab(id)}
+                                    className={`flex-1 py-3 text-xs font-medium transition-colors ${sidebarTab === id ? 'text-white border-b-2 border-yellow-500' : 'text-gray-500 hover:text-gray-300'}`}>
+                                    {label}
+                                    {id === 'library' && <span className="text-[10px] bg-gray-700 px-1.5 py-0.5 rounded-full ml-1">{savedDesigns.length}</span>}
+                                    {id === 'brands' && <span className="text-[10px] bg-gray-700 px-1.5 py-0.5 rounded-full ml-1">{brandKits.length}</span>}
+                                </button>
+                            ))}
+                        </div>
+
+                        {sidebarTab === 'edit' && (
+                            <div className="p-5 space-y-5 animate-fade-in flex-grow overflow-y-auto">
+                                <div>
+                                    <label className="block text-[11px] text-gray-400 mb-1">Placement</label>
+                                    <select value={placement} onChange={e => setPlacement(e.target.value)}
+                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm">
+                                        {Object.entries(PLACEMENTS).map(([id, p]) => <option key={id} value={id}>{p.name}</option>)}
+                                    </select>
+                                </div>
+
+                                {placement === 'display-banner' && (
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Banner-formaat</label>
+                                        <select value={displaySize} onChange={e => setDisplaySize(e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm">
+                                            {Object.entries(DISPLAY_SIZES).map(([id, s]) => <option key={id} value={id}>{s.name}</option>)}
+                                        </select>
+                                    </div>
+                                )}
+
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Brand</h3>
+                                    <div className="flex gap-3 mb-3">
+                                        <div className="flex-1">
+                                            <label className="block text-[11px] text-gray-400 mb-1">Logo / Avatar</label>
+                                            <label className="w-full aspect-square bg-dark-900 border border-dashed border-gray-600 flex items-center justify-center cursor-pointer hover:border-yellow-500 overflow-hidden rounded-full">
+                                                {content.avatar ? <img src={content.avatar.src} className="w-full h-full object-cover" /> : <Icons.User />}
+                                                <input type="file" accept="image/*" onChange={e => handleImageUpload('avatar', e)} />
+                                            </label>
+                                        </div>
+                                        <div className="flex-[3]">
+                                            <label className="block text-[11px] text-gray-400 mb-1">Foto · sleep · Cmd+V</label>
+                                            <label className="w-full h-24 bg-dark-900 border border-dashed border-gray-600 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-yellow-500 overflow-hidden relative">
+                                                {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover opacity-50" /> : (
+                                                    <div className="flex flex-col items-center text-gray-500">
+                                                        <Icons.Image />
+                                                        <span className="text-[10px] mt-1">Klik / Sleep / Cmd+V</span>
+                                                    </div>
+                                                )}
+                                                <input type="file" accept="image/*" onChange={e => handleImageUpload('mainImage', e)} />
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <input type="text" value={content.name} placeholder="Bedrijfsnaam"
+                                            onChange={e => updateContent('name', e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                        <input type="text" value={content.url} placeholder="cosis.nl"
+                                            onChange={e => updateContent('url', e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Content</h3>
+                                    <div className="space-y-2">
+                                        {placement === 'search-mobile' && (
+                                            <>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Zoekopdracht</label>
+                                                    <input type="text" value={content.searchQuery}
+                                                        onChange={e => updateContent('searchQuery', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Headline</label>
+                                                    <input type="text" value={content.headline}
+                                                        onChange={e => updateContent('headline', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Description</label>
+                                                    <textarea rows="2" value={content.description}
+                                                        onChange={e => updateContent('description', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm resize-none" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Sitelinks (max 4)</label>
+                                                    <div className="space-y-1.5">
+                                                        {[0, 1, 2, 3].map(i => (
+                                                            <input key={i} type="text" value={(content.sitelinks || [])[i] || ''}
+                                                                placeholder={`Sitelink ${i + 1}`}
+                                                                onChange={e => updateSitelink(i, e.target.value)}
+                                                                className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-1.5 text-sm" />
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {placement === 'youtube-feed' && (
+                                            <>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Videotitel</label>
+                                                    <input type="text" value={content.youtubeTitle}
+                                                        onChange={e => updateContent('youtubeTitle', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    <div>
+                                                        <label className="block text-[10px] text-gray-400 mb-1">Weergaven</label>
+                                                        <input type="text" value={content.videoViews}
+                                                            onChange={e => updateContent('videoViews', e.target.value)}
+                                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-1.5 text-sm" />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-[10px] text-gray-400 mb-1">Tijd</label>
+                                                        <input type="text" value={content.videoTimeAgo}
+                                                            onChange={e => updateContent('videoTimeAgo', e.target.value)}
+                                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-1.5 text-sm" />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-[10px] text-gray-400 mb-1">Duur</label>
+                                                        <input type="text" value={content.videoDuration}
+                                                            onChange={e => updateContent('videoDuration', e.target.value)}
+                                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-1.5 text-sm" />
+                                                    </div>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {placement === 'discover-feed' && (
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Headline</label>
+                                                <input type="text" value={content.headline}
+                                                    onChange={e => updateContent('headline', e.target.value)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                        )}
+
+                                        {placement === 'display-banner' && (
+                                            <>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Headline</label>
+                                                    <input type="text" value={content.headline}
+                                                        onChange={e => updateContent('headline', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-400 mb-1">Knop-tekst</label>
+                                                    <input type="text" value={content.buttonText}
+                                                        onChange={e => updateContent('buttonText', e.target.value)}
+                                                        className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {placement !== 'display-banner' && (
+                                    <div>
+                                        <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Phone</h3>
+                                        <div className="space-y-3">
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Width ({style.phoneWidth}px)</label>
+                                                <input type="range" min="320" max="450" step="5" value={style.phoneWidth}
+                                                    onChange={e => updateStyle('phoneWidth', parseInt(e.target.value))} className="w-full" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Min height ({style.phoneHeight}px)</label>
+                                                <input type="range" min="500" max="900" step="5" value={style.phoneHeight}
+                                                    onChange={e => updateStyle('phoneHeight', parseInt(e.target.value))} className="w-full" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Frame</label>
+                                                <div className="grid grid-cols-3 gap-1 bg-dark-900 p-1 rounded-lg border border-white/5">
+                                                    {[['none', 'Geen'], ['shadow', 'Schaduw'], ['outline', 'Outline']].map(([id, label]) => (
+                                                        <button key={id} onClick={() => updateStyle('deviceFrame', id)}
+                                                            className={`py-1.5 text-xs font-medium rounded-md ${style.deviceFrame === id ? 'bg-dark-700 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}>
+                                                            {label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex gap-2 pt-2">
+                                    <button onClick={saveDesign} className="flex-1 bg-gray-700 text-white font-bold py-2.5 rounded-lg hover:bg-gray-600 flex items-center justify-center gap-2 text-sm">
+                                        <Icons.Save /> Save
+                                    </button>
+                                    <button onClick={generateCanvas} disabled={loading} className="flex-1 bg-white text-black font-bold py-2.5 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2 text-sm">
+                                        {loading && !batchProgress ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black"></div> : <><Icons.Download /> PNG</>}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {sidebarTab === 'library' && (
+                            <div className="p-4 space-y-3 animate-fade-in flex-grow overflow-y-auto">
+                                {savedDesigns.length === 0 ? (
+                                    <div className="text-center text-gray-500 py-10 text-sm">Nog geen ontwerpen.</div>
+                                ) : savedDesigns.map(d => (
+                                    <div key={d.id} onClick={() => loadDesign(d)}
+                                        className="bg-dark-700 border border-white/5 rounded-lg p-3 cursor-pointer hover:border-yellow-500 flex gap-3 group">
+                                        <div className="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden">
+                                            {d.content?.mainImage ? <img src={d.content.mainImage.src} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-600"><Icons.Image /></div>}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between">
+                                                <span className="text-[10px] font-bold text-gray-400 uppercase">{PLACEMENTS[d.placement]?.name || 'Placement'}</span>
+                                                <button onClick={e => deleteDesign(d.id, e)} className="text-gray-500 hover:text-red-400"><Icons.Trash /></button>
+                                            </div>
+                                            <p className="text-sm font-medium truncate">{d.content?.name}</p>
+                                            <p className="text-[10px] text-gray-500">{d.date}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {sidebarTab === 'brands' && (
+                            <div className="p-4 space-y-3 animate-fade-in flex-grow overflow-y-auto">
+                                <button onClick={saveBrandKit} className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 text-sm">
+                                    <Icons.Plus /> Brand opslaan
+                                </button>
+                                <p className="text-[11px] text-gray-500">Brand kits zijn gedeeld met SocialFrame v2.</p>
+                                {brandKits.length === 0 ? (
+                                    <div className="text-center text-gray-500 py-10 text-sm">Nog geen brand kits.</div>
+                                ) : brandKits.map(k => (
+                                    <div key={k.id} onClick={() => loadBrandKit(k)}
+                                        className="bg-dark-700 border border-white/5 rounded-lg p-3 cursor-pointer hover:border-yellow-500 flex gap-3">
+                                        <div className="w-12 h-12 rounded-full bg-gray-800 flex-shrink-0 overflow-hidden">
+                                            {k.avatar ? <img src={k.avatar.src} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-600"><Icons.Briefcase /></div>}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-[10px] font-bold text-gray-400 uppercase truncate">{k.name}</span>
+                                                <button onClick={e => deleteBrandKit(k.id, e)} className="text-gray-500 hover:text-red-400"><Icons.Trash /></button>
+                                            </div>
+                                            <p className="text-sm font-medium truncate">{k.senderName}</p>
+                                            <p className="text-[10px] text-gray-500 truncate">{k.url}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {sidebarTab === 'export' && (
+                            <div className="p-5 space-y-5 animate-fade-in flex-grow overflow-y-auto">
+                                <p className="text-[12px] text-gray-400">Vink placements aan en exporteer alles als ZIP.</p>
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Placements</h3>
+                                    {Object.entries(PLACEMENTS).map(([id, p]) => (
+                                        <label key={id} className="flex items-center gap-2 text-sm cursor-pointer mb-1.5">
+                                            <input type="checkbox" checked={exportOpts.placements[id]}
+                                                onChange={e => setExportOpts(prev => ({ ...prev, placements: { ...prev.placements, [id]: e.target.checked } }))} />
+                                            {p.name}
+                                        </label>
+                                    ))}
+                                </div>
+                                {exportOpts.placements['display-banner'] && (
+                                    <div>
+                                        <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Banner-formaten</h3>
+                                        {Object.entries(DISPLAY_SIZES).map(([id, s]) => (
+                                            <label key={id} className="flex items-center gap-2 text-sm cursor-pointer mb-1.5">
+                                                <input type="checkbox" checked={exportOpts.displaySizes[id]}
+                                                    onChange={e => setExportOpts(prev => ({ ...prev, displaySizes: { ...prev.displaySizes, [id]: e.target.checked } }))} />
+                                                {s.name}
+                                            </label>
+                                        ))}
+                                    </div>
+                                )}
+                                <button onClick={generateBatch} disabled={loading}
+                                    className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2 text-sm">
+                                    <Icons.Package />
+                                    {batchProgress ? `Bezig (${batchProgress.done}/${batchProgress.total})` : 'Export ZIP'}
+                                </button>
+                            </div>
+                        )}
+                    </aside>
+
+                    <main
+                        className={`flex-1 bg-black relative flex items-center justify-center p-8 checkerboard overflow-auto ${dropping ? 'dropzone-active' : ''}`}
+                        onDragOver={e => { e.preventDefault(); setDropping(true); }}
+                        onDragLeave={() => setDropping(false)}
+                        onDrop={handleDrop}
+                    >
+                        <CanvasPreview
+                            placement={placement}
+                            displaySize={placement === 'display-banner' ? displaySize : null}
+                            content={content}
+                            style={style}
+                        />
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
