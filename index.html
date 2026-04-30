@@ -68,21 +68,17 @@
             '160x600': { name: 'Skyscraper (160×600)',        w: 160, h: 600, layout: 'tall' },
         };
 
-        // Asset-spec hints voor de vormgever, conform Google's Performance Max guidelines.
-        // Worden subtiel in lichtgrijs onderaan de gerenderde mockup gezet.
-        const getAssetHint = (placement, displaySize) => {
-            switch (placement) {
-                case 'search-mobile':
-                    return 'Aanleveren: logo 1200×1200 px (vierkant) of 1200×300 px (landscape)';
-                case 'youtube-feed':
-                    return 'Aanleveren: video- of thumbnail 1920×1080 px (16:9 horizontaal) · channel-logo 800×800 px';
-                case 'discover-feed':
-                    return 'Aanleveren: image 1200×1200 px (1:1) of 1200×628 px (1.91:1)';
-                case 'display-banner':
-                    return displaySize ? `Aanleveren: image ${displaySize} px (exact)` : '';
-                default:
-                    return '';
-            }
+        // Tekent een subtiel afmetings-hint in een lege grijze placeholder.
+        // Helpt de vormgever weten welke pixel-afmetingen die plek nodig heeft.
+        const drawPlaceholderHint = (ctx, x, y, w, h, hintText, scale, color = '#9ca3af') => {
+            if (!hintText) return;
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.font = `500 ${12 * scale}px "Inter", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(hintText, x + w / 2, y + h / 2);
+            ctx.restore();
         };
 
         // ============== CLOUD API ==============
@@ -277,10 +273,11 @@
                 return { width: phoneW, height: Math.max(sliderH, Math.ceil(total)), frame: 'phone', thumbH };
             }
             if (placement === 'discover-feed') {
-                // status(50) + topbar(50) + card padding + image (4:5) + headline + source + actions
+                // status(50) + topbar(50) + card padding + image + headline + source + actions
+                // Default placeholder is 1:1 (1200×1200) — matcht PMax-aanbevolen marketing-image.
                 const imgAspect = content.mainImage
                     ? content.mainImage.height / content.mainImage.width
-                    : (1350 / 1080);
+                    : 1;
                 const imgH = phoneW * imgAspect;
                 measure.font = `600 17px "Inter", sans-serif`;
                 const headlineLines = wrapText(measure, content.headline || '', phoneW - 32);
@@ -515,6 +512,7 @@
             } else {
                 ctx.fillStyle = '#1a1a1a';
                 ctx.fillRect(phoneX, y, phoneW, thumbH);
+                drawPlaceholderHint(ctx, phoneX, y, phoneW, thumbH, '1920×1080 px', scale, '#9ca3af');
             }
 
             // Sponsored overlay top-left
@@ -617,8 +615,13 @@
             // === Card image (full width, aspect from content) ===
             const imgH = metrics.imgH * scale;
             const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
-            if (mainImg) ctx.drawImage(mainImg, phoneX, y, phoneW, imgH);
-            else { ctx.fillStyle = '#dadce0'; ctx.fillRect(phoneX, y, phoneW, imgH); }
+            if (mainImg) {
+                ctx.drawImage(mainImg, phoneX, y, phoneW, imgH);
+            } else {
+                ctx.fillStyle = '#dadce0';
+                ctx.fillRect(phoneX, y, phoneW, imgH);
+                drawPlaceholderHint(ctx, phoneX, y, phoneW, imgH, '1200×1200 px', scale, '#6b7280');
+            }
 
             y += imgH;
 
@@ -734,6 +737,7 @@
                 } else {
                     ctx.fillStyle = '#f4f4f5';
                     ctx.fillRect(pad + innerPad, y, imgSize, imgSize);
+                    drawPlaceholderHint(ctx, pad + innerPad, y, imgSize, imgSize, `${ds.w}×${ds.h} px`, scale, '#9ca3af');
                 }
 
                 y += imgSize + 12 * scale;
@@ -808,6 +812,7 @@
                 } else {
                     ctx.fillStyle = '#f4f4f5';
                     ctx.fillRect(pad + innerPad, imgY, W - innerPad * 2, imgH);
+                    drawPlaceholderHint(ctx, pad + innerPad, imgY, W - innerPad * 2, imgH, `${ds.w}×${ds.h} px`, scale, '#9ca3af');
                 }
 
                 y += imgH + 10 * scale;
@@ -885,20 +890,6 @@
             const robotoBold = (sz) => `500 ${sz * scale}px "Roboto", sans-serif`;
             const robotoReg = (sz) => `400 ${sz * scale}px "Roboto", sans-serif`;
 
-            // Tekent een subtiel asset-spec-label in de paddingruimte onderaan.
-            // Hint dat de vormgever helpt: welke pixel-afmetingen moet hij aanleveren.
-            const drawAssetHint = () => {
-                const hint = getAssetHint(placement, displaySize);
-                if (!hint) return;
-                ctx.save();
-                ctx.fillStyle = '#9ca3af';
-                ctx.font = `400 ${10 * scale}px "Inter", sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(hint, canvas.width / 2, canvas.height - pad / 2);
-                ctx.restore();
-            };
-
             if (metrics.frame === 'banner') {
                 // Display banner — flat canvas, white margin around banner
                 const W = metrics.width * scale;
@@ -913,7 +904,6 @@
                 await renderDisplayBanner(ctx, {
                     scale, content, style, displaySize: displaySize || '300x250',
                 });
-                drawAssetHint();
                 return canvas;
             }
 
@@ -986,7 +976,6 @@
             else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
             ctx.fill();
 
-            drawAssetHint();
             return canvas;
         }
 
